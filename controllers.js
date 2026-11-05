@@ -68,8 +68,14 @@
     }
     function show(key, options) {
         if (!status) return;
-        status.dataset.state = key === 'controller.connected' ? 'ok' : key === 'controller.failed' ? 'error' : '';
+        status.dataset.state = key === 'controller.connected' ? 'ok' : ['controller.failed', 'controller.permissionDenied', 'controller.unsupported'].includes(key) ? 'error' : '';
         window.vcI18n.setText(status, key, options);
+    }
+    function connectionFailed(error) {
+        if (error.name === 'NotFoundError') { updateStatus(); return; }
+        const key = error.message === 'controller.unsupported' ? 'controller.unsupported' :
+            ['NotAllowedError', 'SecurityError'].includes(error.name) ? 'controller.permissionDenied' : 'controller.failed';
+        show(key);
     }
     function updateStatus() {
         const name = connected ? device.productName : nativePad()?.id;
@@ -95,7 +101,7 @@
     }
     async function open(candidate) {
         const selected = findDriver(candidate);
-        if (!selected) throw new Error(window.t('controller.unsupported'));
+        if (!selected) throw new Error('controller.unsupported');
         if (!candidate.opened) await candidate.open();
         device?.removeEventListener('inputreport', readReport);
         device = candidate;
@@ -119,7 +125,7 @@
                 }
                 if (candidate) await open(candidate);
                 else updateStatus();
-            } catch (error) { show('controller.failed', { message: error.message }); }
+            } catch (error) { connectionFailed(error); }
         },
     };
     navigator.hid?.addEventListener('disconnect', event => {
@@ -131,7 +137,7 @@
     });
     navigator.hid?.addEventListener('connect', event => {
         if (!connected && device && event.device.vendorId === device.vendorId && event.device.productId === device.productId) {
-            open(event.device).catch(error => show('controller.failed', { message: error.message }));
+            open(event.device).catch(connectionFailed);
         }
     });
     window.addEventListener('gamepadconnected', updateStatus);
