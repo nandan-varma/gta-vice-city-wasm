@@ -67,7 +67,9 @@
         catch { return null; }
     }
     function show(key, options) {
-        if (status) window.vcI18n.setText(status, key, options);
+        if (!status) return;
+        status.dataset.state = key === 'controller.connected' ? 'ok' : key === 'controller.failed' ? 'error' : '';
+        window.vcI18n.setText(status, key, options);
     }
     function updateStatus() {
         const name = connected ? device.productName : nativePad()?.id;
