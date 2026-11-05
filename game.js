@@ -92,6 +92,7 @@ async function loadData() {
 
 async function startGame(e) {
     e.stopPropagation();
+    await window.vcXboxHid?.connect();
     await resumeAudioContexts();
 
     if (isTouch && document.documentElement.requestFullscreen) {
