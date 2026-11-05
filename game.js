@@ -154,11 +154,16 @@ function setStatus(text) {
 };
 
 async function loadGame(data) {
+    // Use classic controls for a physical controller, including cached desktop settings.
+    const hasGamepad = Array.from(navigator.getGamepads?.() || []).some(pad => pad?.connected);
+    const gameIni = isTouch || hasGamepad
+        ? revc_ini.replace(/^Method=\d+$/m, 'Method=1')
+        : revc_ini;
     var Module = {
         mainCalled: () => {
             try {
                 Module.FS.unlink("/vc-assets/local/revc.ini");
-                Module.FS.createDataFile("/vc-assets/local/revc.ini", 0, revc_ini, revc_ini.length);
+                Module.FS.createDataFile("/vc-assets/local/revc.ini", 0, gameIni, gameIni.length);
             } catch (e) {
                 console.error('mainCalled error:', e);
             }
@@ -233,6 +238,9 @@ async function loadGame(data) {
     document.body.appendChild(script);
 
     document.body.classList.add('gameIsStarted');
+
+    // Desktop controllers are read directly through the browser Gamepad API.
+    if (!isTouch) return;
 
     const emulator = new GamepadEmulator();
     const gamepad = emulator.AddEmulatedGamepad(null, true);
