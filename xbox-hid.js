@@ -2,8 +2,11 @@
 // browser's native Gamepad API does not enumerate the controller.
 (() => {
     const VENDOR_MICROSOFT = 0x045e;
+    const PRODUCT_XBOX_SERIES = 0x0b13;
     const nativeGetGamepads = navigator.getGamepads?.bind(navigator);
     let device;
+    let activeKey;
+    let activeSnapshot;
     const makePad = () => ({
         id: 'Xbox Wireless Controller (Xinput STANDARD GAMEPAD)',
         index: 0,
@@ -17,12 +20,35 @@
     const neutral = makePad();
 
     function supportsReport(candidate) {
-        if (candidate.vendorId !== VENDOR_MICROSOFT) return false;
+        if (candidate.vendorId !== VENDOR_MICROSOFT || candidate.productId !== PRODUCT_XBOX_SERIES) return false;
         return candidate.collections.some(collection =>
             collection.usagePage === 1 && collection.usage === 5 &&
             collection.inputReports.some(report => report.reportId === 1 &&
                 report.items.map(item => `${item.reportSize}:${item.reportCount}`).join(',') ===
-                '16:2,16:2,10:1,6:1,10:1,6:1,4:1,4:1,1:15,1:1,1:1,7:1'));
+                '16:2,16:2,10:1,6:1,10:1,6:1,4:1,4:1,1:15,1:1,1:1,7:1' &&
+                validUsages(report.items)));
+    }
+
+    // Layout and mappings match Chromium's MapperXboxSeriesXBluetooth:
+    // https://chromium.googlesource.com/chromium/src/+/refs/tags/129.0.6651.2/device/gamepad/gamepad_standard_mappings_mac.mm
+    function validUsages(items) {
+        const fields = [
+            [0, 0, 65535, [0x10030, 0x10031]],
+            [1, 0, 65535, [0x10032, 0x10035]],
+            [2, 0, 1023, [0x200c5]],
+            [4, 0, 1023, [0x200c4]],
+            [6, 1, 8, [0x10039]],
+            [10, 0, 1, [0xc00b2]],
+        ];
+        return fields.every(([index, min, max, usages]) => {
+            const item = items[index];
+            return !item.isConstant && !item.isArray && !item.isRange &&
+                item.logicalMinimum === min && item.logicalMaximum === max &&
+                JSON.stringify(item.usages) === JSON.stringify(usages);
+        }) && [3, 5, 7, 9, 11].every(index => items[index].isConstant) &&
+            !items[8].isConstant && !items[8].isArray && items[8].isRange &&
+            items[8].logicalMinimum === 0 && items[8].logicalMaximum === 1 &&
+            items[8].usageMinimum === 0x90001 && items[8].usageMaximum === 0x9000f;
     }
 
     function setButton(index, value) {
@@ -50,10 +76,56 @@
         pad.timestamp = performance.now();
     }
 
-    function notify(type) {
+    function source() {
+        if (pad.connected) return pad;
+        try { return Array.from(nativeGetGamepads?.() || []).find(gamepad => gamepad?.connected); }
+        catch { return null; }
+    }
+
+    function snapshot(gamepad, active = true) {
+        return {
+            id: gamepad.id, index: 0, mapping: gamepad.mapping, connected: true,
+            timestamp: gamepad.timestamp,
+            axes: active ? gamepad.axes : neutral.axes,
+            buttons: active ? gamepad.buttons : neutral.buttons,
+        };
+    }
+
+    // Both input paths expose one controller in slot zero. Native browser slot
+    // numbers never leak into the engine, including during HID/native handoffs.
+    Object.defineProperty(navigator, 'getGamepads', {
+        configurable: true,
+        value: () => {
+            const gamepad = source();
+            return gamepad ? [snapshot(gamepad, document.hasFocus() && !document.hidden)] : [];
+        },
+    });
+
+    function notify(type, gamepad) {
         const event = new Event(type);
-        event.gamepad = pad;
+        event.gamepad = gamepad;
+        event.vcController = true;
         window.dispatchEvent(event);
+    }
+
+    function updateConnection() {
+        const gamepad = source();
+        const key = gamepad === pad ? 'hid' : gamepad && `native:${gamepad.index}:${gamepad.id}`;
+        if (key !== activeKey) {
+            const previous = activeSnapshot;
+            activeKey = key;
+            activeSnapshot = gamepad && snapshot(gamepad);
+            if (previous) notify('gamepaddisconnected', { ...previous, connected: false });
+            if (activeSnapshot) notify('gamepadconnected', activeSnapshot);
+        }
+        updateStatus();
+    }
+    for (const type of ['gamepadconnected', 'gamepaddisconnected']) {
+        window.addEventListener(type, event => {
+            if (event.vcController || event.gamepad?.emulation) return;
+            event.stopImmediatePropagation();
+            updateConnection();
+        }, true);
     }
 
     async function open(candidate) {
@@ -63,34 +135,24 @@
         device = candidate;
         device.addEventListener('inputreport', readReport);
         pad.connected = true;
-        // The engine reads the first gamepad. Keep HID input in slot zero and
-        // do not deliver both native and HID copies of the same controller.
-        Object.defineProperty(navigator, 'getGamepads', {
-            configurable: true,
-            value: () => {
-                if (!pad.connected) return [null];
-                if (document.hasFocus() && !document.hidden) return [pad];
-                neutral.connected = true;
-                neutral.timestamp = performance.now();
-                return [neutral];
-            },
-        });
-        notify('gamepadconnected');
+        updateConnection();
     }
 
     window.vcXboxHid = {
-        async connect() {
-            if (pad.connected || !navigator.hid) return;
+        async connect(requestAccess = false) {
+            if (pad.connected || !navigator.hid) { updateStatus(); return; }
             try {
-                if (Array.from(nativeGetGamepads?.() || []).some(gamepad => gamepad?.connected)) return;
+                if (source()) { updateStatus(); return; }
                 const granted = await navigator.hid.getDevices();
                 let candidate = granted.find(supportsReport);
-                if (!candidate) {
-                    [candidate] = await navigator.hid.requestDevice({ filters: [{ vendorId: VENDOR_MICROSOFT }] });
+                if (!candidate && requestAccess) {
+                    [candidate] = await navigator.hid.requestDevice({ filters: [{ vendorId: VENDOR_MICROSOFT, productId: PRODUCT_XBOX_SERIES }] });
                 }
                 if (candidate) await open(candidate);
+                else updateStatus();
             } catch (error) {
                 console.warn('Xbox HID connection:', error.message);
+                setStatus('controller.failed', { message: error.message });
             }
         },
     };
@@ -99,10 +161,30 @@
         pad.connected = false;
         pad.axes.fill(0);
         pad.buttons.forEach((_, index) => setButton(index, 0));
-        notify('gamepaddisconnected');
+        updateConnection();
     });
     navigator.hid?.addEventListener('connect', event => {
-        if (!device || event.device.vendorId !== device.vendorId || event.device.productId !== device.productId) return;
+        if (!device || !supportsReport(event.device)) return;
         open(event.device).catch(error => console.warn('Xbox HID reconnect:', error.message));
     });
+    const button = document.getElementById('connect-controller');
+    const status = document.getElementById('controller-status');
+    function setStatus(key, options) {
+        if (status) window.vcI18n.setText(status, key, options);
+    }
+    function updateStatus() {
+        const gamepad = source();
+        if (button) button.disabled = !!gamepad;
+        setStatus(gamepad ? 'controller.connected' : navigator.hid ? 'controller.idle' : 'controller.nativeOnly', { name: gamepad?.id });
+    }
+    if (button) {
+        button.hidden = !navigator.hid;
+        button.addEventListener('click', async () => {
+            button.disabled = true;
+            setStatus('controller.connecting');
+            try { await window.vcXboxHid.connect(true); }
+            finally { button.disabled = !!source(); }
+        });
+    }
+    updateStatus();
 })();

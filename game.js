@@ -240,7 +240,7 @@ async function loadGame(data) {
 
     document.body.classList.add('gameIsStarted');
 
-    // Desktop controllers are read directly through the browser Gamepad API.
+    // Desktop input is routed by xbox-hid.js; only touch needs emulation.
     if (!isTouch) return;
 
     const emulator = new GamepadEmulator();
