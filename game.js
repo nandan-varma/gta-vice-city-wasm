@@ -92,7 +92,7 @@ async function loadData() {
 
 async function startGame(e) {
     e.stopPropagation();
-    await window.vcXboxHid?.connect();
+    await window.vcController.connect();
     await resumeAudioContexts();
 
     if (isTouch && document.documentElement.requestFullscreen) {
@@ -155,11 +155,8 @@ function setStatus(text) {
 };
 
 async function loadGame(data) {
-    // Use classic controls for a physical controller, including cached desktop settings.
-    const hasGamepad = Array.from(navigator.getGamepads?.() || []).some(pad => pad?.connected);
-    const gameIni = isTouch || hasGamepad
-        ? revc_ini.replace(/^Method=\d+$/m, 'Method=1')
-        : revc_ini;
+    const hasController = isTouch || window.vcController.connected;
+    const gameIni = hasController ? revc_ini.replace(/^Method=\d+$/m, 'Method=1') : revc_ini;
     var Module = {
         mainCalled: () => {
             try {
@@ -240,11 +237,10 @@ async function loadGame(data) {
 
     document.body.classList.add('gameIsStarted');
 
-    // Desktop input is routed by xbox-hid.js; only touch needs emulation.
-    if (!isTouch) return;
-
     const emulator = new GamepadEmulator();
-    const gamepad = emulator.AddEmulatedGamepad(null, true);
+    window.vcController.attach(emulator);
+    if (!isTouch) return;
+    const gamepad = emulator.AddEmulatedGamepad(0, true);
     const gamepadEmulatorConfig = {
         directions: { up: true, down: true, left: true, right: true },
         dragDistance: isTouch ? 85 : 100,
